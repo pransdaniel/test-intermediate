@@ -10,24 +10,22 @@ class AddStoryView {
     this._cameraActive = false;
     this._canvas = document.createElement("canvas");
     this._presenter = null;
-    
-    // Add event listener for page navigation to ensure camera cleanup
+    this._photoBlob = null; // Menyimpan blob gambar dari kamera atau file
     this._setupNavigationListener();
   }
 
   setPresenter(presenter) {
     this._presenter = presenter;
   }
+
   _setupNavigationListener() {
-    // Listen for hashchange to stop camera when navigating away
     window.addEventListener('hashchange', () => {
       if (this._cameraActive) {
         console.log('Navigation detected, stopping camera');
         this._stopCameraAndCleanup();
       }
     });
-    
-    // Listen for beforeunload to stop camera when page is closed/refreshed
+
     window.addEventListener('beforeunload', () => {
       if (this._cameraActive) {
         console.log('Page unload detected, stopping camera');
@@ -35,13 +33,12 @@ class AddStoryView {
       }
     });
   }
-  
+
   _stopCameraAndCleanup() {
     console.log('Stopping camera and cleaning up resources');
     cameraHelper.stopCamera();
     this._cameraActive = false;
-    
-    // Clear video element if it exists
+
     const cameraFeed = document.getElementById("cameraFeed");
     if (cameraFeed) {
       cameraFeed.srcObject = null;
@@ -63,10 +60,10 @@ class AddStoryView {
             </div>
             
             <div class="camera-section">
-              <h3>Ambil Gambar</h3>
+              <h3>Ambil atau Pilih Gambar</h3>
               <div class="camera-preview">
                 <video id="cameraFeed" autoplay playsinline></video>
-                <img id="capturedImage" alt="Gambar yang diambil">
+                <img id="capturedImage" alt="Gambar yang diambil atau dipilih">
               </div>
               <div class="camera-controls">
                 <button type="button" id="startCameraBtn" class="btn">
@@ -78,6 +75,10 @@ class AddStoryView {
                 <button type="button" id="retakeBtn" class="btn" disabled>
                   <i class="fas fa-redo" aria-hidden="true"></i> Ambil Ulang
                 </button>
+                <label for="uploadImage" class="btn">
+                  <i class="fas fa-upload" aria-hidden="true"></i> Pilih Gambar
+                  <input type="file" id="uploadImage" accept="image/jpeg,image/png" style="display: none;">
+                </label>
               </div>
             </div>
             
@@ -106,7 +107,6 @@ class AddStoryView {
       </div>
     `;
 
-    // Initialize components after rendering
     setTimeout(() => {
       this._initMap();
       this._initCameraButtons();
@@ -156,26 +156,29 @@ class AddStoryView {
   }
 
   _initCameraButtons() {
-    console.log('Initializing camera buttons');
+    console.log('Initializing camera buttons and file input');
     const startCameraBtn = document.getElementById("startCameraBtn");
     const captureBtn = document.getElementById("captureBtn");
     const retakeBtn = document.getElementById("retakeBtn");
+    const uploadImageInput = document.getElementById("uploadImage");
     const cameraFeed = document.getElementById("cameraFeed");
     const capturedImage = document.getElementById("capturedImage");
 
-    if (!startCameraBtn || !captureBtn || !retakeBtn || !cameraFeed || !capturedImage) {
-      console.error('Camera elements not found');
+    if (!startCameraBtn || !captureBtn || !retakeBtn || !uploadImageInput || !cameraFeed || !capturedImage) {
+      console.error('Camera or file input elements not found');
       return;
     }
 
-    // Reset display
     cameraFeed.style.display = "none";
     capturedImage.style.display = "none";
 
+    let isUsingFileUpload = false;
+
     startCameraBtn.addEventListener("click", async () => {
       console.log('Start camera button clicked');
-      if (!this._cameraActive) {
+      if (!this._cameraActive && !isUsingFileUpload) {
         startCameraBtn.disabled = true;
+        uploadImageInput.disabled = true;
         cameraFeed.style.display = "block";
         capturedImage.style.display = "none";
         
@@ -188,13 +191,14 @@ class AddStoryView {
         } else {
           console.error('Failed to start camera');
           startCameraBtn.disabled = false;
+          uploadImageInput.disabled = false;
           cameraFeed.style.display = "none";
           this.showMessage("Gagal memulai kamera. Pastikan kamera diizinkan.", "error");
         }
       }
     });
 
-    captureBtn.addEventListener("click", () => {
+    captureBtn.addEventListener("click", async () => {
       console.log('Capture button clicked');
       if (this._cameraActive) {
         const imageData = cameraHelper.captureImage(cameraFeed, this._canvas);
@@ -205,7 +209,14 @@ class AddStoryView {
           capturedImage.style.display = "block";
           captureBtn.disabled = true;
           retakeBtn.disabled = false;
+          uploadImageInput.disabled = false;
           this._cameraActive = false;
+
+          this._photoBlob = await this._dataURLtoBlob(imageData);
+          if (this._photoBlob.size > 1000000) {
+            this._photoBlob = await this._compressImage(this._photoBlob);
+            capturedImage.src = URL.createObjectURL(this._photoBlob);
+          }
         } else {
           console.error('Failed to capture image');
           this.showMessage("Gagal mengambil gambar. Coba lagi.", "error");
@@ -216,21 +227,93 @@ class AddStoryView {
     retakeBtn.addEventListener("click", async () => {
       console.log('Retake button clicked');
       capturedImage.style.display = "none";
-      cameraFeed.style.display = "block";
+      this._photoBlob = null;
       retakeBtn.disabled = true;
-      
-      const cameraStarted = await cameraHelper.startCamera(cameraFeed);
-      if (cameraStarted) {
-        console.log('Camera restarted successfully');
-        this._cameraActive = true;
-        captureBtn.disabled = false;
-      } else {
-        console.error('Failed to restart camera');
+
+      if (isUsingFileUpload) {
+        uploadImageInput.value = '';
+        uploadImageInput.disabled = false;
         startCameraBtn.disabled = false;
-        cameraFeed.style.display = "none";
-        this.showMessage("Gagal memulai kamera. Pastikan kamera diizinkan.", "error");
+        isUsingFileUpload = false;
+      } else {
+        cameraFeed.style.display = "block";
+        const cameraStarted = await cameraHelper.startCamera(cameraFeed);
+        if (cameraStarted) {
+          console.log('Camera restarted successfully');
+          this._cameraActive = true;
+          captureBtn.disabled = false;
+          uploadImageInput.disabled = true;
+        } else {
+          console.error('Failed to restart camera');
+          startCameraBtn.disabled = false;
+          uploadImageInput.disabled = false;
+          cameraFeed.style.display = "none";
+          this.showMessage("Gagal memulai kamera. Pastikan kamera diizinkan.", "error");
+        }
       }
     });
+
+    uploadImageInput.addEventListener("change", async (event) => {
+      console.log('File selected');
+      const file = event.target.files[0];
+      if (file) {
+        if (!file.type.match('image/jpeg|image/png')) {
+          this.showMessage("Hanya file JPEG atau PNG yang diperbolehkan!", "error");
+          uploadImageInput.value = '';
+          return;
+        }
+
+        if (file.size > 1000000) {
+          this._photoBlob = await this._compressImage(file);
+        } else {
+          this._photoBlob = file;
+        }
+
+        capturedImage.src = URL.createObjectURL(this._photoBlob);
+        capturedImage.style.display = "block";
+        cameraFeed.style.display = "none";
+        startCameraBtn.disabled = true;
+        captureBtn.disabled = true;
+        retakeBtn.disabled = false;
+        isUsingFileUpload = true;
+      }
+    });
+  }
+
+  async _dataURLtoBlob(dataURL) {
+    const response = await fetch(dataURL);
+    return await response.blob();
+  }
+
+  async _compressImage(blob) {
+    const img = new Image();
+    img.src = URL.createObjectURL(blob);
+    await new Promise(resolve => img.onload = resolve);
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const maxSize = 1024;
+    let width = img.width;
+    let height = img.height;
+
+    if (width > height) {
+      if (width > maxSize) {
+        height *= maxSize / width;
+        width = maxSize;
+      }
+    } else {
+      if (height > maxSize) {
+        width *= maxSize / height;
+        height = maxSize;
+      }
+    }
+
+    canvas.width = width;
+    canvas.height = height;
+    ctx.drawImage(img, 0, 0, width, height);
+
+    const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.7);
+    return await this._dataURLtoBlob(compressedDataUrl);
   }
 
   _initFormSubmit() {
@@ -249,14 +332,12 @@ class AddStoryView {
       const description = document.getElementById("description").value.trim();
       const capturedImage = document.getElementById("capturedImage");
       
-      // Get form data
       const formData = {
         description,
         hasImage: capturedImage.src && capturedImage.src !== 'about:blank' && capturedImage.style.display !== 'none',
         position: { ...this._position }
       };
       
-      // Let the presenter handle form submission
       if (this._presenter) {
         this._presenter.submitStory(formData);
       } else {
@@ -266,7 +347,6 @@ class AddStoryView {
     });
   }
 
-  // Validation method that can be called by the presenter
   validateForm() {
     const description = document.getElementById("description").value.trim();
     const capturedImage = document.getElementById("capturedImage");
@@ -274,20 +354,16 @@ class AddStoryView {
     let hasError = false;
     let errorMessage = '';
 
-    // Validate description
     if (!description) {
       errorMessage = "Cerita tidak boleh kosong.";
       hasError = true;
-    }
-
-    // Validate image
-    else if (!capturedImage.src || capturedImage.src === 'about:blank' || capturedImage.style.display === 'none') {
-      errorMessage = "Gambar Anda belum diambil!";
+    } else if (!this._photoBlob) {
+      errorMessage = "Gambar belum diambil atau dipilih!";
       hasError = true;
-    }
-
-    // Validate location
-    else if (lat === null || lon === null) {
+    } else if (this._photoBlob.size > 1000000) {
+      errorMessage = "Ukuran gambar melebihi 1MB!";
+      hasError = true;
+    } else if (lat === null || lon === null) {
       errorMessage = "Pilih lokasi pada peta!";
       hasError = true;
     }
@@ -299,18 +375,11 @@ class AddStoryView {
     
     return true;
   }
-  
+
   async getStoryData() {
-    // Get the description
     const description = document.getElementById("description").value.trim();
-    
-    // Get the photo blob from camera helper
-    const photoBlob = await cameraHelper.getCapturedImageBlob();
-    
-    // Get the position
     const { lat, lon } = this._position;
-    
-    return { description, photoBlob, lat, lon };
+    return { description, photoBlob: this._photoBlob, lat, lon };
   }
 
   showMessage(message, type = "success") {
@@ -318,7 +387,6 @@ class AddStoryView {
     const messageContainer = document.getElementById("messageContainer");
     if (messageContainer) {
       messageContainer.innerHTML = `<div class="message ${type}"><p>${message}</p></div>`;
-      // Auto-hide message after 3 seconds
       setTimeout(() => {
         messageContainer.innerHTML = "";
       }, 3000);
@@ -343,11 +411,11 @@ class AddStoryView {
     this.showMessage(message, "success");
     this.resetForm();
   }
-  
+
   resetForm() {
-    // Reset form fields
     const descriptionField = document.getElementById("description");
     const capturedImage = document.getElementById("capturedImage");
+    const uploadImageInput = document.getElementById("uploadImage");
     
     if (descriptionField) {
       descriptionField.value = "";
@@ -358,16 +426,19 @@ class AddStoryView {
       capturedImage.src = "";
     }
 
-    // Reset map marker
+    if (uploadImageInput) {
+      uploadImageInput.value = '';
+    }
+
+    this._photoBlob = null;
+
     if (this._marker) {
       this._map.removeLayer(this._marker);
       this._marker = null;
     }
 
-    // Reset position
     this._position = { lat: null, lon: null };
     
-    // Update UI
     const latValueEl = document.getElementById("latValue");
     const lonValueEl = document.getElementById("lonValue");
     
@@ -376,9 +447,18 @@ class AddStoryView {
       lonValueEl.textContent = "Belum dipilih";
     }
     
-    // Ensure camera is stopped
     if (this._cameraActive) {
       this._stopCameraAndCleanup();
+    }
+
+    const startCameraBtn = document.getElementById("startCameraBtn");
+    const captureBtn = document.getElementById("captureBtn");
+    const retakeBtn = document.getElementById("retakeBtn");
+    if (startCameraBtn && captureBtn && retakeBtn && uploadImageInput) {
+      startCameraBtn.disabled = false;
+      captureBtn.disabled = true;
+      retakeBtn.disabled = true;
+      uploadImageInput.disabled = false;
     }
   }
 
@@ -386,26 +466,23 @@ class AddStoryView {
     this.showMessage(message, "error");
   }
 
-   destroy() {
+  destroy() {
     console.log('Destroying add story view');
     
-    // Stop camera if active
     if (this._cameraActive) {
       this._stopCameraAndCleanup();
     }
 
-    // Clean up map if it exists
     if (this._map) {
       this._map.remove();
       this._map = null;
     }
   }
-  
-  // Add missing methods
+
   scheduleNavigation(callback, delay = 1000) {
     setTimeout(callback, delay);
   }
-  
+
   navigateToRoute(route) {
     if (window.router) {
       window.router.navigateTo(route);
